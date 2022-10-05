@@ -30,6 +30,8 @@ type Keeper struct {
 	// - storing block height -> bloom filter map. Needed for the Web3 API.
 	// - storing block hash -> block height map. Needed for the Web3 API.
 	storeKey sdk.StoreKey
+	// Account Keeper for fetching accounts
+	accountKeeper types.AccountKeeper
 	// Ethermint concrete implementation on the EVM StateDB interface
 	CommitStateDB *types.CommitStateDB
 	// Transaction counter in a block. Used on StateSB's Prepare function.
@@ -42,16 +44,17 @@ type Keeper struct {
 // NewKeeper generates new evm module keeper
 func NewKeeper(
 	cdc *codec.Codec, storeKey sdk.StoreKey, paramSpace params.Subspace, ak types.AccountKeeper,
-) Keeper {
+) *Keeper {
 	// set KeyTable if it has not already been set
 	if !paramSpace.HasKeyTable() {
 		paramSpace = paramSpace.WithKeyTable(types.ParamKeyTable())
 	}
 
 	// NOTE: we pass in the parameter space to the CommitStateDB in order to use custom denominations for the EVM operations
-	return Keeper{
+	return &Keeper{
 		cdc:           cdc,
 		storeKey:      storeKey,
+		accountKeeper: ak,
 		CommitStateDB: types.NewCommitStateDB(sdk.Context{}, storeKey, paramSpace, ak),
 		TxCount:       0,
 		Bloom:         big.NewInt(0),
@@ -86,6 +89,21 @@ func (k Keeper) SetBlockHash(ctx sdk.Context, hash []byte, height int64) {
 	store := prefix.NewStore(ctx.KVStore(k.storeKey), types.KeyPrefixBlockHash)
 	bz := sdk.Uint64ToBigEndian(uint64(height))
 	store.Set(hash, bz)
+}
+
+// ----------------------------------------------------------------------------
+// Epoch Height -> hash mapping functions
+// Required by EVM context's GetHashFunc
+// ----------------------------------------------------------------------------
+
+// GetHeightHash returns the block header hash associated with a given block height and chain epoch number.
+func (k Keeper) GetHeightHash(ctx sdk.Context, height uint64) common.Hash {
+	return k.CommitStateDB.WithContext(ctx).GetHeightHash(height)
+}
+
+// SetHeightHash sets the block header hash associated with a given height.
+func (k Keeper) SetHeightHash(ctx sdk.Context, height uint64, hash common.Hash) {
+	k.CommitStateDB.WithContext(ctx).SetHeightHash(height, hash)
 }
 
 // ----------------------------------------------------------------------------
@@ -133,6 +151,7 @@ func (k Keeper) GetAllTxLogs(ctx sdk.Context) []types.TransactionLogs {
 // GetAccountStorage return state storage associated with an account
 func (k Keeper) GetAccountStorage(ctx sdk.Context, address common.Address) (types.Storage, error) {
 	storage := types.Storage{}
+
 	err := k.ForEachStorage(ctx, address, func(key, value common.Hash) bool {
 		storage = append(storage, types.NewState(key, value))
 		return false
@@ -146,9 +165,9 @@ func (k Keeper) GetAccountStorage(ctx sdk.Context, address common.Address) (type
 
 // GetChainConfig gets block height from block consensus hash
 func (k Keeper) GetChainConfig(ctx sdk.Context) (types.ChainConfig, bool) {
-	store := prefix.NewStore(ctx.KVStore(k.storeKey), types.KeyPrefixChainConfig)
-	// get from an empty key that's already prefixed by KeyPrefixChainConfig
-	bz := store.Get([]byte{})
+	store := ctx.KVStore(k.storeKey)
+
+	bz := store.Get(types.KeyPrefixChainConfig)
 	if len(bz) == 0 {
 		return types.ChainConfig{}, false
 	}
@@ -160,8 +179,7 @@ func (k Keeper) GetChainConfig(ctx sdk.Context) (types.ChainConfig, bool) {
 
 // SetChainConfig sets the mapping from block consensus hash to block height
 func (k Keeper) SetChainConfig(ctx sdk.Context, config types.ChainConfig) {
-	store := prefix.NewStore(ctx.KVStore(k.storeKey), types.KeyPrefixChainConfig)
+	store := ctx.KVStore(k.storeKey)
 	bz := k.cdc.MustMarshalBinaryBare(config)
-	// get to an empty key that's already prefixed by KeyPrefixChainConfig
-	store.Set([]byte{}, bz)
+	store.Set(types.KeyPrefixChainConfig, bz)
 }

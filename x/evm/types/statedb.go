@@ -10,7 +10,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/x/params"
 
-	emint "github.com/cosmos/ethermint/types"
+	ethermint "github.com/cosmos/ethermint/types"
 
 	ethcmn "github.com/ethereum/go-ethereum/common"
 	ethstate "github.com/ethereum/go-ethereum/core/state"
@@ -32,7 +32,7 @@ type revision struct {
 
 // CommitStateDB implements the Geth state.StateDB interface. Instead of using
 // a trie and database for querying and persistence, the Keeper uses KVStores
-// and an account mapper is used to facilitate state transitions.
+// and an AccountKeeper to facilitate state transitions.
 //
 // TODO: This implementation is subject to change in regards to its statefull
 // manner. In otherwords, how this relates to the keeper in this module.
@@ -107,7 +107,7 @@ func NewCommitStateDB(
 	}
 }
 
-// WithContext returns a Database with an updated sdk context
+// WithContext returns a Database with an updated SDK context
 func (csdb *CommitStateDB) WithContext(ctx sdk.Context) *CommitStateDB {
 	csdb.ctx = ctx
 	return csdb
@@ -116,6 +116,13 @@ func (csdb *CommitStateDB) WithContext(ctx sdk.Context) *CommitStateDB {
 // ----------------------------------------------------------------------------
 // Setters
 // ----------------------------------------------------------------------------
+
+// SetHeightHash sets the block header hash associated with a given height.
+func (csdb *CommitStateDB) SetHeightHash(height uint64, hash ethcmn.Hash) {
+	store := prefix.NewStore(csdb.ctx.KVStore(csdb.storeKey), KeyPrefixHeightHash)
+	key := HeightHashKey(height)
+	store.Set(key, hash.Bytes())
+}
 
 // SetParams sets the evm parameters to the param space.
 func (csdb *CommitStateDB) SetParams(params Params) {
@@ -286,6 +293,18 @@ func (csdb *CommitStateDB) SlotInAccessList(addr ethcmn.Address, slot ethcmn.Has
 // Getters
 // ----------------------------------------------------------------------------
 
+// GetHeightHash returns the block header hash associated with a given block height and chain epoch number.
+func (csdb *CommitStateDB) GetHeightHash(height uint64) ethcmn.Hash {
+	store := prefix.NewStore(csdb.ctx.KVStore(csdb.storeKey), KeyPrefixHeightHash)
+	key := HeightHashKey(height)
+	bz := store.Get(key)
+	if len(bz) == 0 {
+		return ethcmn.Hash{}
+	}
+
+	return ethcmn.BytesToHash(bz)
+}
+
 // GetParams returns the total set of evm parameters.
 func (csdb *CommitStateDB) GetParams() (params Params) {
 	csdb.paramSpace.GetParamSet(csdb.ctx, &params)
@@ -321,6 +340,10 @@ func (csdb *CommitStateDB) TxIndex() int {
 // BlockHash returns the current block hash set by Prepare.
 func (csdb *CommitStateDB) BlockHash() ethcmn.Hash {
 	return csdb.bhash
+}
+
+func (csdb *CommitStateDB) SetBlockHash(hash ethcmn.Hash) {
+	csdb.bhash = hash
 }
 
 // GetCode returns the code for a given account.
@@ -671,6 +694,7 @@ func (csdb *CommitStateDB) Reset(_ ethcmn.Hash) error {
 	csdb.logSize = 0
 	csdb.preimages = []preimageEntry{}
 	csdb.hashToPreimageIndex = make(map[ethcmn.Hash]int)
+	csdb.accessList = newAccessList()
 
 	csdb.clearJournalAndRefund()
 	return nil
@@ -680,7 +704,7 @@ func (csdb *CommitStateDB) Reset(_ ethcmn.Hash) error {
 func (csdb *CommitStateDB) UpdateAccounts() {
 	for _, stateEntry := range csdb.stateObjects {
 		currAcc := csdb.accountKeeper.GetAccount(csdb.ctx, sdk.AccAddress(stateEntry.address.Bytes()))
-		emintAcc, ok := currAcc.(*emint.EthAccount)
+		ethermintAcc, ok := currAcc.(*ethermint.EthAccount)
 		if !ok {
 			continue
 		}
@@ -688,12 +712,12 @@ func (csdb *CommitStateDB) UpdateAccounts() {
 		evmDenom := csdb.GetParams().EvmDenom
 		balance := sdk.Coin{
 			Denom:  evmDenom,
-			Amount: emintAcc.GetCoins().AmountOf(evmDenom),
+			Amount: ethermintAcc.GetCoins().AmountOf(evmDenom),
 		}
 
 		if stateEntry.stateObject.Balance() != balance.Amount.BigInt() && balance.IsValid() ||
-			stateEntry.stateObject.Nonce() != emintAcc.GetSequence() {
-			stateEntry.stateObject.account = emintAcc
+			stateEntry.stateObject.Nonce() != ethermintAcc.GetSequence() {
+			stateEntry.stateObject.account = ethermintAcc
 		}
 	}
 }
@@ -713,9 +737,8 @@ func (csdb *CommitStateDB) clearJournalAndRefund() {
 
 // Prepare sets the current transaction hash and index and block hash which is
 // used when the EVM emits new state logs.
-func (csdb *CommitStateDB) Prepare(thash, bhash ethcmn.Hash, txi int) {
+func (csdb *CommitStateDB) Prepare(thash ethcmn.Hash, txi int) {
 	csdb.thash = thash
-	csdb.bhash = bhash
 	csdb.txIndex = txi
 }
 
@@ -741,59 +764,71 @@ func (csdb *CommitStateDB) CreateAccount(addr ethcmn.Address) {
 //
 // NOTE: Snapshots of the copied state cannot be applied to the copy.
 func (csdb *CommitStateDB) Copy() *CommitStateDB {
-	csdb.lock.Lock()
-	defer csdb.lock.Unlock()
 
 	// copy all the basic fields, initialize the memory ones
-	state := &CommitStateDB{
-		ctx:                  csdb.ctx,
-		storeKey:             csdb.storeKey,
-		paramSpace:           csdb.paramSpace,
-		accountKeeper:        csdb.accountKeeper,
-		stateObjects:         []stateEntry{},
-		addressToObjectIndex: make(map[ethcmn.Address]int),
-		stateObjectsDirty:    make(map[ethcmn.Address]struct{}),
-		refund:               csdb.refund,
-		logSize:              csdb.logSize,
-		preimages:            make([]preimageEntry, len(csdb.preimages)),
-		hashToPreimageIndex:  make(map[ethcmn.Hash]int, len(csdb.hashToPreimageIndex)),
-		journal:              newJournal(),
-	}
+	state := &CommitStateDB{}
+	CopyCommitStateDB(csdb, state)
+
+	return state
+}
+
+func CopyCommitStateDB(from, to *CommitStateDB) {
+	from.lock.Lock()
+	defer from.lock.Unlock()
+
+	to.ctx = from.ctx
+	to.storeKey = from.storeKey
+	to.paramSpace = from.paramSpace
+	to.accountKeeper = from.accountKeeper
+	to.stateObjects = []stateEntry{}
+	to.addressToObjectIndex = make(map[ethcmn.Address]int)
+	to.stateObjectsDirty = make(map[ethcmn.Address]struct{})
+	to.refund = from.refund
+	to.logSize = from.logSize
+	to.preimages = make([]preimageEntry, len(from.preimages))
+	to.hashToPreimageIndex = make(map[ethcmn.Hash]int, len(from.hashToPreimageIndex))
+	to.journal = newJournal()
+	to.thash = from.thash
+	to.bhash = from.bhash
+	to.txIndex = from.txIndex
+	validRevisions := make([]revision, len(from.validRevisions))
+	copy(validRevisions, from.validRevisions)
+	to.validRevisions = validRevisions
+	to.nextRevisionID = from.nextRevisionID
+	to.accessList = from.accessList.Copy()
 
 	// copy the dirty states, logs, and preimages
-	for _, dirty := range csdb.journal.dirties {
+	for _, dirty := range from.journal.dirties {
 		// There is a case where an object is in the journal but not in the
 		// stateObjects: OOG after touch on ripeMD prior to Byzantium. Thus, we
 		// need to check for nil.
 		//
 		// Ref: https://github.com/ethereum/go-ethereum/pull/16485#issuecomment-380438527
-		if idx, exist := csdb.addressToObjectIndex[dirty.address]; exist {
-			state.stateObjects = append(state.stateObjects, stateEntry{
+		if idx, exist := from.addressToObjectIndex[dirty.address]; exist {
+			to.stateObjects = append(to.stateObjects, stateEntry{
 				address:     dirty.address,
-				stateObject: csdb.stateObjects[idx].stateObject.deepCopy(state),
+				stateObject: from.stateObjects[idx].stateObject.deepCopy(to),
 			})
-			state.addressToObjectIndex[dirty.address] = len(state.stateObjects) - 1
-			state.stateObjectsDirty[dirty.address] = struct{}{}
+			to.addressToObjectIndex[dirty.address] = len(to.stateObjects) - 1
+			to.stateObjectsDirty[dirty.address] = struct{}{}
 		}
 	}
 
 	// Above, we don't copy the actual journal. This means that if the copy is
 	// copied, the loop above will be a no-op, since the copy's journal is empty.
 	// Thus, here we iterate over stateObjects, to enable copies of copies.
-	for addr := range csdb.stateObjectsDirty {
-		if idx, exist := state.addressToObjectIndex[addr]; !exist {
-			state.setStateObject(csdb.stateObjects[idx].stateObject.deepCopy(state))
-			state.stateObjectsDirty[addr] = struct{}{}
+	for addr := range from.stateObjectsDirty {
+		if idx, exist := to.addressToObjectIndex[addr]; !exist {
+			to.setStateObject(from.stateObjects[idx].stateObject.deepCopy(to))
+			to.stateObjectsDirty[addr] = struct{}{}
 		}
 	}
 
 	// copy pre-images
-	for i, preimageEntry := range csdb.preimages {
-		state.preimages[i] = preimageEntry
-		state.hashToPreimageIndex[preimageEntry.hash] = i
+	for i, preimageEntry := range from.preimages {
+		to.preimages[i] = preimageEntry
+		to.hashToPreimageIndex[preimageEntry.hash] = i
 	}
-
-	return state
 }
 
 // ForEachStorage iterates over each storage items, all invoke the provided
@@ -815,7 +850,7 @@ func (csdb *CommitStateDB) ForEachStorage(addr ethcmn.Address, cb func(key, valu
 
 		if idx, dirty := so.keyToDirtyStorageIndex[key]; dirty {
 			// check if iteration stops
-			if cb(key, so.dirtyStorage[idx].Value) {
+			if cb(key, ethcmn.HexToHash(so.dirtyStorage[idx].Value)) {
 				break
 			}
 

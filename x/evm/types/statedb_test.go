@@ -40,7 +40,7 @@ func (suite *StateDBTestSuite) SetupTest() {
 	checkTx := false
 
 	suite.app = app.Setup(checkTx)
-	suite.ctx = suite.app.BaseApp.NewContext(checkTx, abci.Header{Height: 1})
+	suite.ctx = suite.app.BaseApp.NewContext(checkTx, abci.Header{Height: 1, ChainID: "ethermint-1"})
 	suite.stateDB = suite.app.EvmKeeper.CommitStateDB.WithContext(suite.ctx)
 
 	privkey, err := ethsecp256k1.GenerateKey()
@@ -67,10 +67,21 @@ func (suite *StateDBTestSuite) TestParams() {
 	suite.Require().Equal(newParams, params)
 }
 
+func (suite *StateDBTestSuite) TestGetHeightHash() {
+	hash := suite.stateDB.GetHeightHash(0)
+	suite.Require().Equal(ethcmn.Hash{}.String(), hash.String())
+
+	expHash := ethcmn.BytesToHash([]byte("hash"))
+	suite.stateDB.SetHeightHash(10, expHash)
+
+	hash = suite.stateDB.GetHeightHash(10)
+	suite.Require().Equal(expHash.String(), hash.String())
+}
+
 func (suite *StateDBTestSuite) TestBloomFilter() {
 	// Prepare db for logs
 	tHash := ethcmn.BytesToHash([]byte{0x1})
-	suite.stateDB.Prepare(tHash, ethcmn.Hash{}, 0)
+	suite.stateDB.Prepare(tHash, 0)
 	contractAddress := ethcmn.BigToAddress(big.NewInt(1))
 	log := ethtypes.Log{Address: contractAddress}
 
@@ -408,7 +419,8 @@ func (suite *StateDBTestSuite) TestSuiteDB_Prepare() {
 	bhash := ethcmn.BytesToHash([]byte("bhash"))
 	txi := 1
 
-	suite.stateDB.Prepare(thash, bhash, txi)
+	suite.stateDB.Prepare(thash, txi)
+	suite.stateDB.SetBlockHash(bhash)
 
 	suite.Require().Equal(txi, suite.stateDB.TxIndex())
 	suite.Require().Equal(bhash, suite.stateDB.BlockHash())
@@ -635,7 +647,7 @@ func (suite *StateDBTestSuite) TestCommitStateDB_ForEachStorage() {
 		name      string
 		malleate  func()
 		callback  func(key, value ethcmn.Hash) (stop bool)
-		expValues []ethcmn.Hash
+		expValues []string
 	}{
 		{
 			"aggregate state",
@@ -648,12 +660,12 @@ func (suite *StateDBTestSuite) TestCommitStateDB_ForEachStorage() {
 				storage = append(storage, types.NewState(key, value))
 				return false
 			},
-			[]ethcmn.Hash{
-				ethcmn.BytesToHash([]byte("value0")),
-				ethcmn.BytesToHash([]byte("value1")),
-				ethcmn.BytesToHash([]byte("value2")),
-				ethcmn.BytesToHash([]byte("value3")),
-				ethcmn.BytesToHash([]byte("value4")),
+			[]string{
+				ethcmn.BytesToHash([]byte("value0")).String(),
+				ethcmn.BytesToHash([]byte("value1")).String(),
+				ethcmn.BytesToHash([]byte("value2")).String(),
+				ethcmn.BytesToHash([]byte("value3")).String(),
+				ethcmn.BytesToHash([]byte("value4")).String(),
 			},
 		},
 		{
@@ -669,8 +681,8 @@ func (suite *StateDBTestSuite) TestCommitStateDB_ForEachStorage() {
 				}
 				return false
 			},
-			[]ethcmn.Hash{
-				ethcmn.BytesToHash([]byte("filtervalue")),
+			[]string{
+				ethcmn.BytesToHash([]byte("filtervalue")).String(),
 			},
 		},
 	}
@@ -685,7 +697,7 @@ func (suite *StateDBTestSuite) TestCommitStateDB_ForEachStorage() {
 			suite.Require().NoError(err)
 			suite.Require().Equal(len(tc.expValues), len(storage), fmt.Sprintf("Expected values:\n%v\nStorage Values\n%v", tc.expValues, storage))
 
-			vals := make([]ethcmn.Hash, len(storage))
+			vals := make([]string, len(storage))
 			for i := range storage {
 				vals[i] = storage[i].Value
 			}

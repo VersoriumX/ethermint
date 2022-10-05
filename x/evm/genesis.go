@@ -1,35 +1,68 @@
 package evm
 
 import (
-	sdk "github.com/cosmos/cosmos-sdk/types"
+	"fmt"
 
-	emint "github.com/cosmos/ethermint/types"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	authexported "github.com/cosmos/cosmos-sdk/x/auth/exported"
+
+	ethcmn "github.com/ethereum/go-ethereum/common"
+
+	ethermint "github.com/cosmos/ethermint/types"
+	"github.com/cosmos/ethermint/x/evm/keeper"
 	"github.com/cosmos/ethermint/x/evm/types"
 
 	abci "github.com/tendermint/tendermint/abci/types"
 )
 
 // InitGenesis initializes genesis state based on exported genesis
-func InitGenesis(ctx sdk.Context, k Keeper, data GenesisState) []abci.ValidatorUpdate {
+func InitGenesis(
+	ctx sdk.Context,
+	k keeper.Keeper,
+	accountKeeper types.AccountKeeper, // nolint: interfacer
+	data GenesisState,
+) []abci.ValidatorUpdate {
+
+	k.SetParams(ctx, data.Params)
+	evmDenom := data.Params.EvmDenom
+
 	for _, account := range data.Accounts {
-		// FIXME: this will override bank InitGenesis balance!
-		k.SetBalance(ctx, account.Address, account.Balance)
-		k.SetCode(ctx, account.Address, account.Code)
+		address := ethcmn.HexToAddress(account.Address)
+		accAddress := sdk.AccAddress(address.Bytes())
+		// check that the EVM balance the matches the account balance
+		acc := accountKeeper.GetAccount(ctx, accAddress)
+		if acc == nil {
+			panic(fmt.Errorf("account not found for address %s", account.Address))
+		}
+
+		_, ok := acc.(*ethermint.EthAccount)
+		if !ok {
+			panic(
+				fmt.Errorf("account %s must be an %T type, got %T",
+					account.Address, &ethermint.EthAccount{}, acc,
+				),
+			)
+		}
+
+		evmBalance := acc.GetCoins().AmountOf(evmDenom)
+
+		k.SetNonce(ctx, address, acc.GetSequence())
+		k.SetBalance(ctx, address, evmBalance.BigInt())
+		k.SetCode(ctx, address, ethcmn.Hex2Bytes(account.Code))
+
 		for _, storage := range account.Storage {
-			k.SetState(ctx, account.Address, storage.Key, storage.Value)
+			k.SetState(ctx, address, ethcmn.HexToHash(storage.Key), ethcmn.HexToHash(storage.Value))
 		}
 	}
 
 	var err error
 	for _, txLog := range data.TxsLogs {
-		err = k.SetLogs(ctx, txLog.Hash, txLog.Logs)
-		if err != nil {
+		if err = k.SetLogs(ctx, ethcmn.HexToHash(txLog.Hash), txLog.Logs); err != nil {
 			panic(err)
 		}
 	}
 
 	k.SetChainConfig(ctx, data.ChainConfig)
-	k.SetParams(ctx, data.Params)
 
 	// set state objects and code to store
 	_, err = k.Commit(ctx, false)
@@ -48,16 +81,14 @@ func InitGenesis(ctx sdk.Context, k Keeper, data GenesisState) []abci.ValidatorU
 }
 
 // ExportGenesis exports genesis state of the EVM module
-func ExportGenesis(ctx sdk.Context, k Keeper, ak types.AccountKeeper) GenesisState {
+func ExportGenesis(ctx sdk.Context, k keeper.Keeper, ak types.AccountKeeper) GenesisState {
 	// nolint: prealloc
 	var ethGenAccounts []types.GenesisAccount
-	accounts := ak.GetAllAccounts(ctx)
-
-	for _, account := range accounts {
-
-		ethAccount, ok := account.(*emint.EthAccount)
+	ak.IterateAccounts(ctx, func(account authexported.Account) bool {
+		ethAccount, ok := account.(*ethermint.EthAccount)
 		if !ok {
-			continue
+			// ignore non EthAccounts
+			return false
 		}
 
 		addr := ethAccount.EthAddress()
@@ -68,14 +99,14 @@ func ExportGenesis(ctx sdk.Context, k Keeper, ak types.AccountKeeper) GenesisSta
 		}
 
 		genAccount := types.GenesisAccount{
-			Address: addr,
-			Balance: k.GetBalance(ctx, addr),
-			Code:    k.GetCode(ctx, addr),
+			Address: addr.String(),
+			Code:    ethcmn.Bytes2Hex(k.GetCode(ctx, addr)),
 			Storage: storage,
 		}
 
 		ethGenAccounts = append(ethGenAccounts, genAccount)
-	}
+		return false
+	})
 
 	config, _ := k.GetChainConfig(ctx)
 

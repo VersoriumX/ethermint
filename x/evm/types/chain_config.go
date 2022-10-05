@@ -66,6 +66,16 @@ func (cc ChainConfig) EthereumConfig(chainID *big.Int) *params.ChainConfig {
 	}
 }
 
+// IsIstanbul returns whether the Istanbul version is enabled.
+func (cc ChainConfig) IsIstanbul() bool {
+	return getBlockValue(cc.IstanbulBlock) != nil
+}
+
+// IsHomestead returns whether the Homestead version is enabled.
+func (cc ChainConfig) IsHomestead() bool {
+	return getBlockValue(cc.HomesteadBlock) != nil
+}
+
 // String implements the fmt.Stringer interface
 func (cc ChainConfig) String() string {
 	out, _ := yaml.Marshal(cc)
@@ -85,8 +95,8 @@ func DefaultChainConfig() ChainConfig {
 		ByzantiumBlock:      sdk.ZeroInt(),
 		ConstantinopleBlock: sdk.ZeroInt(),
 		PetersburgBlock:     sdk.ZeroInt(),
-		IstanbulBlock:       sdk.NewInt(-1),
-		MuirGlacierBlock:    sdk.NewInt(-1),
+		IstanbulBlock:       sdk.ZeroInt(),
+		MuirGlacierBlock:    sdk.ZeroInt(),
 		YoloV2Block:         sdk.NewInt(-1),
 		EWASMBlock:          sdk.NewInt(-1),
 	}
@@ -149,12 +159,6 @@ func (cc ChainConfig) Validate() error {
 func validateHash(hex string) error {
 	if hex != "" && strings.TrimSpace(hex) == "" {
 		return sdkerrors.Wrapf(ErrInvalidChainConfig, "hash cannot be blank")
-	}
-
-	bz := common.FromHex(hex)
-	lenHex := len(bz)
-	if lenHex > 0 && lenHex != common.HashLength {
-		return sdkerrors.Wrapf(ErrInvalidChainConfig, "invalid hash length, expected %d, got %d", common.HashLength, lenHex)
 	}
 
 	return nil

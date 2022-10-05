@@ -39,8 +39,6 @@ func NewEthSetupContextDecorator() EthSetupContextDecorator {
 // This is undone at the EthGasConsumeDecorator, where the context is set with the
 // ethereum tx GasLimit.
 func (escd EthSetupContextDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simulate bool, next sdk.AnteHandler) (newCtx sdk.Context, err error) {
-	ctx = ctx.WithBlockGasMeter(sdk.NewInfiniteGasMeter())
-
 	// all transactions must implement GasTx
 	gasTx, ok := tx.(authante.GasTx)
 	if !ok {
@@ -101,7 +99,7 @@ func (emfd EthMempoolFeeDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simula
 	evmDenom := emfd.evmKeeper.GetParams(ctx).EvmDenom
 
 	// fee = gas price * gas limit
-	fee := sdk.NewInt64DecCoin(evmDenom, msgEthTx.Fee().Int64())
+	fee := sdk.NewDecCoinFromDec(evmDenom, sdk.NewDecFromBigIntWithPrec(msgEthTx.Fee(), sdk.Precision))
 
 	minGasPrices := ctx.MinGasPrices()
 	minFees := minGasPrices.AmountOf(evmDenom).MulInt64(int64(msgEthTx.Data.GasLimit))
@@ -119,7 +117,7 @@ func (emfd EthMempoolFeeDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simula
 	if !ctx.MinGasPrices().IsZero() && !hasEnoughFees {
 		return ctx, sdkerrors.Wrap(
 			sdkerrors.ErrInsufficientFee,
-			fmt.Sprintf("insufficient fee, got: %q required: %q", fee, ctx.MinGasPrices()),
+			fmt.Sprintf("insufficient fee, got: %q required: %q", fee, minFees),
 		)
 	}
 
@@ -257,7 +255,7 @@ func (nvd NonceVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, sim
 	// if multiple transactions are submitted in succession with increasing nonces,
 	// all will be rejected except the first, since the first needs to be included in a block
 	// before the sequence increments
-	if msgEthTx.Data.AccountNonce < seq {
+	if msgEthTx.Data.AccountNonce != seq {
 		return ctx, sdkerrors.Wrapf(
 			sdkerrors.ErrInvalidSequence,
 			"invalid nonce; got %d, expected %d", msgEthTx.Data.AccountNonce, seq,
@@ -330,7 +328,7 @@ func (egcd EthGasConsumeDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simula
 	// Charge sender for gas up to limit
 	if gasLimit != 0 {
 		// Cost calculates the fees paid to validators based on gas limit and price
-		cost := new(big.Int).Mul(msgEthTx.Data.Price, new(big.Int).SetUint64(gasLimit))
+		cost := new(big.Int).Mul(msgEthTx.Data.Price.BigInt(), new(big.Int).SetUint64(gasLimit))
 
 		evmDenom := egcd.evmKeeper.GetParams(ctx).EvmDenom
 

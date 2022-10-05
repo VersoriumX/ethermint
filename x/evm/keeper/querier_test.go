@@ -17,7 +17,6 @@ func (suite *KeeperTestSuite) TestQuerier() {
 		malleate func()
 		expPass  bool
 	}{
-		{"protocol version", []string{types.QueryProtocolVersion}, func() {}, true},
 		{"balance", []string{types.QueryBalance, addrHex}, func() {
 			suite.app.EvmKeeper.SetBalance(suite.ctx, suite.address, big.NewInt(5))
 		}, true},
@@ -35,7 +34,6 @@ func (suite *KeeperTestSuite) TestQuerier() {
 		}, true},
 		{"logs", []string{types.QueryLogs, "0x0"}, func() {}, true},
 		{"account", []string{types.QueryAccount, "0x0"}, func() {}, true},
-		{"exportAccount", []string{types.QueryExportAccount, "0x0"}, func() {}, true},
 		{"unknown request", []string{"other"}, func() {}, false},
 	}
 

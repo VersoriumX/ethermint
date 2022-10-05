@@ -7,6 +7,7 @@ import (
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
+	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -20,7 +21,13 @@ func (k *Keeper) BeginBlock(ctx sdk.Context, req abci.RequestBeginBlock) {
 	// Gas costs are handled within msg handler so costs should be ignored
 	ctx = ctx.WithGasMeter(sdk.NewInfiniteGasMeter())
 
-	k.SetBlockHash(ctx, req.Header.LastBlockId.GetHash(), req.Header.GetHeight()-1)
+	// Set the hash -> height and height -> hash mapping.
+	currentHash := req.Hash
+	height := req.Header.GetHeight()
+
+	k.SetHeightHash(ctx, uint64(height), common.BytesToHash(currentHash))
+	k.SetBlockHash(ctx, currentHash, height)
+	k.CommitStateDB.SetBlockHash(common.BytesToHash(currentHash))
 
 	// reset counters that are used on CommitStateDB.Prepare
 	k.Bloom = big.NewInt(0)
@@ -29,7 +36,7 @@ func (k *Keeper) BeginBlock(ctx sdk.Context, req abci.RequestBeginBlock) {
 
 // EndBlock updates the accounts and commits state objects to the KV Store, while
 // deleting the empty ones. It also sets the bloom filers for the request block to
-// the store. The EVM end block loginc doesn't update the validator set, thus it returns
+// the store. The EVM end block logic doesn't update the validator set, thus it returns
 // an empty slice.
 func (k Keeper) EndBlock(ctx sdk.Context, req abci.RequestEndBlock) []abci.ValidatorUpdate {
 	// Gas costs are handled within msg handler so costs should be ignored
@@ -38,14 +45,17 @@ func (k Keeper) EndBlock(ctx sdk.Context, req abci.RequestEndBlock) []abci.Valid
 	// Update account balances before committing other parts of state
 	k.UpdateAccounts(ctx)
 
+	root, err := k.Commit(ctx, true)
 	// Commit state objects to KV store
-	_, err := k.Commit(ctx, true)
 	if err != nil {
+		k.Logger(ctx).Error("failed to commit state objects", "error", err, "height", ctx.BlockHeight())
 		panic(err)
 	}
 
-	// Clear accounts cache after account data has been committed
-	k.ClearStateObjects(ctx)
+	// reset all cache after account data has been committed, that make sure node state consistent
+	if err = k.Reset(ctx, root); err != nil {
+		panic(err)
+	}
 
 	// set the block bloom filter bytes to store
 	bloom := ethtypes.BytesToBloom(k.Bloom.Bytes())

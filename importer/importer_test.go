@@ -99,7 +99,7 @@ func trapSignals() {
 }
 
 // nolint: interfacer
-func createAndTestGenesis(t *testing.T, cms sdk.CommitMultiStore, ak auth.AccountKeeper, evmKeeper evm.Keeper) {
+func createAndTestGenesis(t *testing.T, cms sdk.CommitMultiStore, ak auth.AccountKeeper, evmKeeper *evm.Keeper) {
 	genBlock := ethcore.DefaultGenesisBlock()
 	ms := cms.CacheMultiStore()
 	ctx := sdk.NewContext(ms, abci.Header{}, false, logger)
@@ -254,7 +254,8 @@ func TestImportBlocks(t *testing.T) {
 		}
 
 		for i, tx := range block.Transactions() {
-			evmKeeper.Prepare(ctx, tx.Hash(), block.Hash(), i)
+			evmKeeper.Prepare(ctx, tx.Hash(), i)
+			evmKeeper.CommitStateDB.SetBlockHash(block.Hash())
 
 			receipt, gas, err := applyTransaction(
 				chainConfig, chainContext, nil, gp, evmKeeper, header, tx, usedGas, vmConfig,
@@ -285,7 +286,7 @@ func TestImportBlocks(t *testing.T) {
 // reward. The total reward consists of the static block reward and rewards for
 // included uncles. The coinbase of each uncle block is also rewarded.
 func accumulateRewards(
-	config *ethparams.ChainConfig, evmKeeper evm.Keeper,
+	config *ethparams.ChainConfig, evmKeeper *evm.Keeper,
 	header *ethtypes.Header, uncles []*ethtypes.Header,
 ) {
 
@@ -318,7 +319,7 @@ func accumulateRewards(
 // Code is pulled from go-ethereum 1.9 because the StateDB interface does not include the
 // SetBalance function implementation
 // Ref: https://github.com/ethereum/go-ethereum/blob/52f2461774bcb8cdd310f86b4bc501df5b783852/consensus/misc/dao.go#L74
-func applyDAOHardFork(evmKeeper evm.Keeper) {
+func applyDAOHardFork(evmKeeper *evm.Keeper) {
 	// Retrieve the contract to refund balances into
 	if !evmKeeper.CommitStateDB.Exist(ethparams.DAORefundContract) {
 		evmKeeper.CommitStateDB.CreateAccount(ethparams.DAORefundContract)
@@ -339,7 +340,7 @@ func applyDAOHardFork(evmKeeper evm.Keeper) {
 // Ref: https://github.com/ethereum/go-ethereum/blob/52f2461774bcb8cdd310f86b4bc501df5b783852/core/state_processor.go#L88
 func applyTransaction(
 	config *ethparams.ChainConfig, bc ethcore.ChainContext, author *ethcmn.Address,
-	gp *ethcore.GasPool, evmKeeper evm.Keeper, header *ethtypes.Header,
+	gp *ethcore.GasPool, evmKeeper *evm.Keeper, header *ethtypes.Header,
 	tx *ethtypes.Transaction, usedGas *uint64, cfg ethvm.Config,
 ) (*ethtypes.Receipt, uint64, error) {
 	msg, err := tx.AsMessage(ethtypes.MakeSigner(config, header.Number))
@@ -348,11 +349,12 @@ func applyTransaction(
 	}
 
 	// Create a new context to be used in the EVM environment
-	context := ethcore.NewEVMContext(msg, header, bc, author)
+	blockCtx := ethcore.NewEVMBlockContext(header, bc, author)
+	txCtx := ethcore.NewEVMTxContext(msg)
 
 	// Create a new environment which holds all relevant information
 	// about the transaction and calling mechanisms.
-	vmenv := ethvm.NewEVM(context, evmKeeper.CommitStateDB, config, cfg)
+	vmenv := ethvm.NewEVM(blockCtx, txCtx, evmKeeper.CommitStateDB, config, cfg)
 
 	// Apply the transaction to the current state (included in the env)
 	execResult, err := ethcore.ApplyMessage(vmenv, msg, gp)
@@ -384,7 +386,7 @@ func applyTransaction(
 
 	// if the transaction created a contract, store the creation address in the receipt.
 	if msg.To() == nil {
-		receipt.ContractAddress = ethcrypto.CreateAddress(vmenv.Context.Origin, tx.Nonce())
+		receipt.ContractAddress = ethcrypto.CreateAddress(vmenv.TxContext.Origin, tx.Nonce())
 	}
 
 	// Set the receipt logs and create a bloom for filtering

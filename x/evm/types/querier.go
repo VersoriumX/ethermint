@@ -8,7 +8,6 @@ import (
 
 // Supported endpoints
 const (
-	QueryProtocolVersion = "protocolVersion"
 	QueryBalance         = "balance"
 	QueryBlockNumber     = "blockNumber"
 	QueryStorage         = "storage"
@@ -19,17 +18,7 @@ const (
 	QueryBloom           = "bloom"
 	QueryLogs            = "logs"
 	QueryAccount         = "account"
-	QueryExportAccount   = "exportAccount"
 )
-
-// QueryResProtocolVersion is response type for protocol version query
-type QueryResProtocolVersion struct {
-	Version string `json:"version"`
-}
-
-func (q QueryResProtocolVersion) String() string {
-	return q.Version
-}
 
 // QueryResBalance is response type for balance query
 type QueryResBalance struct {
@@ -82,7 +71,13 @@ type QueryETHLogs struct {
 }
 
 func (q QueryETHLogs) String() string {
-	return fmt.Sprintf("%+v", q.Logs)
+	var logsStr string
+	logsLen := len(q.Logs)
+	for i := 0; i < logsLen; i++ {
+		logsStr = fmt.Sprintf("%s%v\n", logsStr, *q.Logs[i])
+	}
+
+	return logsStr
 }
 
 // QueryBloomFilter is response type for tx logs query

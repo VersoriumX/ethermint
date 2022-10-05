@@ -18,7 +18,7 @@ import (
 func (suite *KeeperTestSuite) TestBloomFilter() {
 	// Prepare db for logs
 	tHash := ethcmn.BytesToHash([]byte{0x1})
-	suite.app.EvmKeeper.Prepare(suite.ctx, tHash, ethcmn.Hash{}, 0)
+	suite.app.EvmKeeper.Prepare(suite.ctx, tHash, 0)
 	contractAddress := ethcmn.BigToAddress(big.NewInt(1))
 	log := ethtypes.Log{Address: contractAddress}
 
@@ -359,7 +359,8 @@ func (suite *KeeperTestSuite) TestSuiteDB_Prepare() {
 	bhash := ethcmn.BytesToHash([]byte("bhash"))
 	txi := 1
 
-	suite.app.EvmKeeper.Prepare(suite.ctx, thash, bhash, txi)
+	suite.app.EvmKeeper.Prepare(suite.ctx, thash, txi)
+	suite.app.EvmKeeper.CommitStateDB.SetBlockHash(bhash)
 
 	suite.Require().Equal(txi, suite.app.EvmKeeper.TxIndex(suite.ctx))
 	suite.Require().Equal(bhash, suite.app.EvmKeeper.BlockHash(suite.ctx))
@@ -582,7 +583,7 @@ func (suite *KeeperTestSuite) TestCommitStateDB_ForEachStorage() {
 		name      string
 		malleate  func()
 		callback  func(key, value ethcmn.Hash) (stop bool)
-		expValues []ethcmn.Hash
+		expValues []string
 	}{
 		{
 			"aggregate state",
@@ -595,12 +596,12 @@ func (suite *KeeperTestSuite) TestCommitStateDB_ForEachStorage() {
 				storage = append(storage, types.NewState(key, value))
 				return false
 			},
-			[]ethcmn.Hash{
-				ethcmn.BytesToHash([]byte("value0")),
-				ethcmn.BytesToHash([]byte("value1")),
-				ethcmn.BytesToHash([]byte("value2")),
-				ethcmn.BytesToHash([]byte("value3")),
-				ethcmn.BytesToHash([]byte("value4")),
+			[]string{
+				ethcmn.BytesToHash([]byte("value0")).String(),
+				ethcmn.BytesToHash([]byte("value1")).String(),
+				ethcmn.BytesToHash([]byte("value2")).String(),
+				ethcmn.BytesToHash([]byte("value3")).String(),
+				ethcmn.BytesToHash([]byte("value4")).String(),
 			},
 		},
 		{
@@ -616,8 +617,8 @@ func (suite *KeeperTestSuite) TestCommitStateDB_ForEachStorage() {
 				}
 				return false
 			},
-			[]ethcmn.Hash{
-				ethcmn.BytesToHash([]byte("filtervalue")),
+			[]string{
+				ethcmn.BytesToHash([]byte("filtervalue")).String(),
 			},
 		},
 	}
@@ -632,7 +633,7 @@ func (suite *KeeperTestSuite) TestCommitStateDB_ForEachStorage() {
 			suite.Require().NoError(err)
 			suite.Require().Equal(len(tc.expValues), len(storage), fmt.Sprintf("Expected values:\n%v\nStorage Values\n%v", tc.expValues, storage))
 
-			vals := make([]ethcmn.Hash, len(storage))
+			vals := make([]string, len(storage))
 			for i := range storage {
 				vals[i] = storage[i].Value
 			}
