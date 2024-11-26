@@ -11,6 +11,6 @@
     "@aragon/contract-helpers-test": "^0.1.0",
     "chai": "^4.2.0",
     "truffle": "^5.1.42",
-    "web3": "^1.6.1"
+    "web3": "^1.7.0"
   }
 }
